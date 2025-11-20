@@ -14,6 +14,8 @@ qt_internal_add_module(WebChannel
         Qt::CorePrivate
 )
 
+set_target_properties(WebChannel PROPERTIES OUTPUT_NAME MenloWebChannel)
+
 set(resource_file "../../examples/webchannel/shared/qwebchannel.js")
 set_source_files_properties(${resource_file} PROPERTIES
     QT_RESOURCE_ALIAS "qwebchannel.js"

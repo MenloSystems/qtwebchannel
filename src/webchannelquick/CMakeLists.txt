@@ -17,3 +17,5 @@ qt_internal_add_qml_module(WebChannelQuick
         Qt::CorePrivate
         Qt::WebChannelPrivate
 )
+
+set_target_properties(WebChannelQuick PROPERTIES OUTPUT_NAME MenloWebChannelQuick)
