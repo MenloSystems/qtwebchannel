@@ -50,6 +50,16 @@ public Q_SLOTS:
     void connectTo(QWebChannelAbstractTransport *transport);
     void disconnectFrom(QWebChannelAbstractTransport *transport);
 
+protected:
+    virtual QVariant readProperty(const QObject *object, const QMetaProperty &property);
+    virtual bool writeProperty(QObject *object, const QMetaProperty &property, const QVariant &value);
+    virtual std::optional<QVariant> invokeMethodFilter(QObject *const object, const QMetaMethod &method, const QVariant *args, size_t n_args);
+
+    virtual bool canDeleteObject(const QObject *object);
+
+    virtual QObject *wrapObject(QObject *object);
+    virtual QObject *unwrapObject(QObject *object);
+
 private:
     Q_DECLARE_PRIVATE(QWebChannel)
     QWebChannel(QWebChannelPrivate &dd, QObject *parent = nullptr);

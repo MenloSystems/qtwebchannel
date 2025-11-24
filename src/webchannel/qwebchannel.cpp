@@ -320,6 +320,51 @@ void QWebChannel::disconnectFrom(QWebChannelAbstractTransport *transport)
     }
 }
 
+QVariant QWebChannel::readProperty(const QObject *object, const QMetaProperty &property)
+{
+    return property.read(object);
+}
+
+bool QWebChannel::writeProperty(QObject *object, const QMetaProperty &property, const QVariant &value)
+{
+    return property.write(object, value);
+}
+
+/*!
+    \internal
+
+    Returns whether a client may ask for the deletion of \a object.
+
+    A client asks for it with a call of deleteLater(), and the publisher
+    answers such a call with the deletion of the wrapped object. A subclass
+    that exports objects which it does not own returns false here, and the
+    publisher then refuses the call.
+*/
+bool QWebChannel::canDeleteObject(const QObject *object)
+{
+    Q_UNUSED(object);
+    return true;
+}
+
+std::optional<QVariant> QWebChannel::invokeMethodFilter(QObject * const object, const QMetaMethod &method, const QVariant *args, size_t n_args)
+{
+    Q_UNUSED(object);
+    Q_UNUSED(method);
+    Q_UNUSED(args);
+    Q_UNUSED(n_args);
+    return std::nullopt;
+}
+
+QObject *QWebChannel::wrapObject(QObject *object)
+{
+    return object;
+}
+
+QObject *QWebChannel::unwrapObject(QObject *object)
+{
+    return object;
+}
+
 QT_END_NAMESPACE
 
 #include "moc_qwebchannel.cpp"

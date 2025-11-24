@@ -337,7 +337,7 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
                      prop.name(), object->metaObject()->className());
         }
         propertyInfo.append(signalInfo);
-        propertyInfo.append(wrapResult(prop.read(object), transport));
+        propertyInfo.append(wrapResult(webChannel->readProperty(object, prop), transport));
         qtProperties.append(propertyInfo);
     }
     auto addMethod = [&qtSignals, &qtMethods, &identifiers](int i, const QMetaMethod &method, const QByteArray &rawName) {
@@ -485,7 +485,7 @@ void QMetaObjectPublisher::sendPendingPropertyUpdates()
         for (const int propertyIndex : indexes) {
             const QMetaProperty &property = metaObject->property(propertyIndex);
             Q_ASSERT(property.isValid());
-            properties[QString::number(propertyIndex)] = wrapResult(property.read(object), nullptr, objectId);
+            properties[QString::number(propertyIndex)] = wrapResult(webChannel->readProperty(object, property), nullptr, objectId);
         }
 
         const auto sigMap = it.value().signalMap;
@@ -552,6 +552,12 @@ QVariant QMetaObjectPublisher::invokeMethod_helper(QObject *const object, const 
         metaTypes[i + 1] = mt.iface();
     }
 
+    if (auto result = webChannel->invokeMethodFilter(object, method, variants.data(), variants.size());
+        result.has_value())
+    {
+        return result.value();
+    }
+
     // now, the return type
     QMetaType mt = method.returnMetaType();
     names[0] = mt.name();
@@ -594,6 +600,11 @@ QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const QMetaMe
                                               const QJsonArray &args)
 {
     if (method.name() == QByteArrayLiteral("deleteLater")) {
+        if (!webChannel->canDeleteObject(object)) {
+            qWarning() << "Refusing the deletion of object" << object
+                       << "that a client asked for.";
+            return QJsonValue();
+        }
         // invoke `deleteLater` on wrapped QObject indirectly
         deleteWrappedObject(object);
         return QJsonValue();
@@ -629,6 +640,12 @@ QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const int met
 QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const QByteArray &methodName,
                                             const QJsonArray &args)
 {
+    if (methodName == QByteArrayLiteral("deleteLater") && !webChannel->canDeleteObject(object)) {
+        qWarning() << "Refusing the deletion of object" << object
+                   << "that a client asked for.";
+        return QJsonValue();
+    }
+
     QList<OverloadResolutionCandidate> candidates;
 
     const QMetaObject *mo = object->metaObject();
@@ -667,7 +684,7 @@ void QMetaObjectPublisher::setProperty(QObject *object, const int propertyIndex,
     QMetaProperty property = object->metaObject()->property(propertyIndex);
     if (!property.isValid()) {
         qWarning() << "Cannot set unknown property" << propertyIndex << "of object" << object;
-    } else if (!property.write(object, toVariant(value, property.userType()))) {
+    } else if (!webChannel->writeProperty(object, property, toVariant(value, property.userType()))) {
         qWarning() << "Could not write value " << value << "to property" << property.name() << "of object" << object;
     }
 }
@@ -749,17 +766,22 @@ void QMetaObjectPublisher::objectDestroyed(const QObject *object)
 
 QObject *QMetaObjectPublisher::unwrapObject(const QString &objectId) const
 {
-    if (!objectId.isEmpty()) {
-        ObjectInfo objectInfo = wrappedObjects.value(objectId);
-        if (objectInfo.object)
-            return objectInfo.object;
-        QObject *object = registeredObjects.value(objectId);
-        if (object)
-            return object;
-    }
+    auto *internallyUnwrappedObject = [&]() -> QObject* {
+        if (!objectId.isEmpty()) {
+            ObjectInfo objectInfo = wrappedObjects.value(objectId);
+            if (objectInfo.object)
+                return objectInfo.object;
+            QObject *object = registeredObjects.value(objectId);
+            if (object)
+                return object;
+        }
 
-    qWarning() << "No wrapped object" << objectId;
-    return nullptr;
+        qWarning() << "No wrapped object" << objectId;
+        return nullptr;
+    }();
+
+    return internallyUnwrappedObject ? webChannel->unwrapObject(internallyUnwrappedObject)
+                                     : nullptr;
 }
 
 QVariant QMetaObjectPublisher::unwrapMap(QVariantMap map) const
@@ -935,6 +957,10 @@ QJsonValue QMetaObjectPublisher::wrapResult(const QVariant &result, QWebChannelA
     }
 
     if (QObject *object = result.value<QObject *>()) {
+        object = webChannel->wrapObject(object);
+        if (!object) {
+            return QJsonValue::Null;
+        }
         QString id = registeredObjectIds.value(object);
 
         QJsonObject classInfo;
