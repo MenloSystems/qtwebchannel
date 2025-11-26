@@ -537,63 +537,15 @@ QVariant QMetaObjectPublisher::invokeMethod_helper(QObject *const object, const 
     constexpr qsizetype ArgumentCount = 16;
 
     QVarLengthArray<QVariant, ArgumentCount> variants;
-    QVarLengthArray<const char *, ArgumentCount> names(method.parameterCount() + 1);
-    QVarLengthArray<void *, ArgumentCount> parameters(names.size());
-    QVarLengthArray<const QtPrivate::QMetaTypeInterface *, ArgumentCount> metaTypes(names.size());
-    variants.reserve(names.size());
-    variants << QVariant();
+    variants.reserve(method.parameterCount());
 
     // start with the formal parameters
-    for (qsizetype i = 0; i < names.size() - 1; ++i) {
+    for (qsizetype i = 0; i < method.parameterCount(); ++i) {
         QMetaType mt = method.parameterMetaType(i);
-        QVariant &v = variants.emplace_back(toVariant(args.at(i), mt.id()));
-        parameters[i + 1] = v.data();
-        names[i + 1] = mt.name();
-        metaTypes[i + 1] = mt.iface();
+        variants.emplace_back(toVariant(args.at(i), mt.id()));
     }
 
-    if (auto result = webChannel->invokeMethodFilter(object, method, variants.data(), variants.size());
-        result.has_value())
-    {
-        return result.value();
-    }
-
-    // now, the return type
-    QMetaType mt = method.returnMetaType();
-    names[0] = mt.name();
-    metaTypes[0] = mt.iface();
-    if (int id = mt.id(); id != QMetaType::Void) {
-        // Only init variant with return type if its not a variant itself,
-        // which would lead to nested variants which is not what we want.
-        if (id == QMetaType::QVariant) {
-            parameters[0] = &variants[0];
-        } else {
-            variants[0] = QVariant(mt);
-            parameters[0] = variants[0].data();
-        }
-    } else {
-        parameters[0] = nullptr;
-    }
-
-    // step 3: make the call
-    QMetaMethodInvoker::InvokeFailReason r =
-            QMetaMethodInvoker::invokeImpl(method, object, Qt::AutoConnection,
-                                           parameters.size(), parameters.constData(),
-                                           names.constData(), metaTypes.constData());
-
-    if (r == QMetaMethodInvoker::InvokeFailReason::None)
-        return variants.first();
-
-    // print warnings for failures to match
-    if (int(r) >= int(QMetaMethodInvoker::InvokeFailReason::FormalParameterMismatch)) {
-        int n = int(r) - int(QMetaMethodInvoker::InvokeFailReason::FormalParameterMismatch);
-        QByteArray callee = webChannel->metaObject(object)->className() + QByteArrayView("::")
-                + method.methodSignature();
-        qWarning() << "Cannot convert formal parameter" << n << "from" << names[n + 1]
-                   << "in call to" << callee.constData();
-    }
-
-    return QJsonValue();
+    return webChannel->invokeMethod(object, method, variants.data());
 }
 
 QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const QMetaMethod &method,

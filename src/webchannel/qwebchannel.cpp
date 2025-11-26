@@ -11,6 +11,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
+#include <QtCore/private/qmetaobject_p.h>
+
 #include <algorithm>
 
 QT_BEGIN_NAMESPACE
@@ -346,13 +348,73 @@ bool QWebChannel::canDeleteObject(const QObject *object)
     return true;
 }
 
-std::optional<QVariant> QWebChannel::invokeMethodFilter(QObject * const object, const QMetaMethod &method, const QVariant *args, size_t n_args)
+QVariant QWebChannel::invokeMethod(QObject * const object, const QMetaMethod &method,
+                                   QVariant *args)
 {
-    Q_UNUSED(object);
-    Q_UNUSED(method);
-    Q_UNUSED(args);
-    Q_UNUSED(n_args);
-    return std::nullopt;
+    // a good value for the number of arguments we'll preallocate in QVLA
+    constexpr qsizetype ArgumentCount = 16;
+
+    QVarLengthArray<const char *, ArgumentCount> names(method.parameterCount() + 1);
+    QVarLengthArray<void *, ArgumentCount> parameters(names.size());
+    QVarLengthArray<const QtPrivate::QMetaTypeInterface *, ArgumentCount> metaTypes(names.size());
+
+    QVariant returnVariant;
+
+    // start with the formal parameters
+    for (qsizetype i = 0; i < names.size() - 1; ++i) {
+        QMetaType mt = method.parameterMetaType(i);
+        QVariant &variant = args[i];
+        if (mt == QMetaType::fromType<QVariant>() && variant.metaType() != mt) {
+            parameters[i + 1] = &variant;
+        } else {
+            if (variant.metaType() != mt) {
+                qWarning().nospace() << "Type mismatch at parameter " << i << " while invoking "
+                                     << object << "::" << method.methodSignature() << ". Expected: "
+                                     << mt.name() << "; got: " << variant;
+                return {};
+            }
+            parameters[i + 1] = variant.data();
+        }
+        names[i + 1] = mt.name();
+        metaTypes[i + 1] = mt.iface();
+    }
+
+    // now, the return type
+    QMetaType mt = method.returnMetaType();
+    names[0] = mt.name();
+    metaTypes[0] = mt.iface();
+    if (int id = mt.id(); id != QMetaType::Void) {
+        // Only init variant with return type if its not a variant itself,
+        // which would lead to nested variants which is not what we want.
+        if (id == QMetaType::QVariant) {
+            parameters[0] = &returnVariant;
+        } else {
+            returnVariant = QVariant(mt);
+            parameters[0] = returnVariant.data();
+        }
+    } else {
+        parameters[0] = nullptr;
+    }
+
+    // step 3: make the call
+    QMetaMethodInvoker::InvokeFailReason r =
+        QMetaMethodInvoker::invokeImpl(method, object, Qt::AutoConnection,
+                                       parameters.size(), parameters.constData(),
+                                       names.constData(), metaTypes.constData());
+
+    if (r == QMetaMethodInvoker::InvokeFailReason::None)
+        return returnVariant;
+
+    // print warnings for failures to match
+    if (int(r) >= int(QMetaMethodInvoker::InvokeFailReason::FormalParameterMismatch)) {
+        int n = int(r) - int(QMetaMethodInvoker::InvokeFailReason::FormalParameterMismatch);
+        QByteArray callee = metaObject(object)->className() + QByteArrayView("::")
+                            + method.methodSignature();
+        qWarning() << "Cannot convert formal parameter" << n << "from" << names[n + 1]
+                   << "in call to" << callee.constData();
+    }
+
+    return QJsonValue();
 }
 
 QObject *QWebChannel::wrapObject(QObject *object)
