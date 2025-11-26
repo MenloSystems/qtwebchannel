@@ -808,7 +808,10 @@ QVariant QMetaObjectPublisher::toVariant(const QJsonValue &value, int targetType
         QObject *unwrappedObject = unwrapObject(value.toObject()[KEY_ID].toString());
         if (unwrappedObject == nullptr)
             qWarning() << "Cannot not convert non-object argument" << value << "to QObject*.";
-        return QVariant::fromValue(unwrappedObject);
+        auto variant = QVariant::fromValue(unwrappedObject);
+        if (!variant.convert(target))
+            qWarning() << "Could not convert object" << unwrappedObject << "to target type" << target.name();
+        return variant;
     } else if (isQFlagsType(targetType)) {
         int flagsValue = value.toInt();
         return QVariant(target, reinterpret_cast<const void*>(&flagsValue));
