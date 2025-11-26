@@ -287,7 +287,7 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
     QJsonArray qtProperties;
     QJsonObject qtEnums;
 
-    const QMetaObject *metaObject = object->metaObject();
+    const QMetaObject *metaObject = webChannel->metaObject(object);
 
     // A metaobject can declare the same property name more than once, e.g.
     // where a class re-declares a property of its superclass. The client
@@ -334,7 +334,7 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
         } else if (!prop.isConstant() && !prop.isBindable()) {
             qWarning("Property '%s'' of object '%s' has no notify signal, is not bindable and is not constant, "
                      "value updates in HTML will be broken!",
-                     prop.name(), object->metaObject()->className());
+                     prop.name(), webChannel->metaObject(object)->className());
         }
         propertyInfo.append(signalInfo);
         propertyInfo.append(wrapResult(webChannel->readProperty(object, prop), transport));
@@ -416,7 +416,7 @@ QJsonObject QMetaObjectPublisher::initializeClient(QWebChannelAbstractTransport 
 
 void QMetaObjectPublisher::initializePropertyUpdates(QObject *const object, const QJsonObject &objectInfo)
 {
-    auto *metaObject = object->metaObject();
+    auto *metaObject = webChannel->metaObject(object);
     auto *signalHandler = signalHandlerFor(object);
     for (const auto propertyInfoVar : objectInfo[KEY_PROPERTIES].toArray()) {
         const QJsonArray &propertyInfo = propertyInfoVar.toArray();
@@ -471,7 +471,7 @@ void QMetaObjectPublisher::sendPendingPropertyUpdates()
     const PendingPropertyUpdates::const_iterator end = pendingPropertyUpdates.constEnd();
     for (PendingPropertyUpdates::const_iterator it = pendingPropertyUpdates.constBegin(); it != end; ++it) {
         const QObject *object = it.key();
-        const QMetaObject *const metaObject = object->metaObject();
+        const QMetaObject *const metaObject = webChannel->metaObject(object);
         const QString objectId = registeredObjectIds.value(object);
         const SignalToPropertyNameMap &objectsSignalToPropertyMap = signalToPropertyMap.value(object);
         // maps property name to current property value
@@ -587,7 +587,7 @@ QVariant QMetaObjectPublisher::invokeMethod_helper(QObject *const object, const 
     // print warnings for failures to match
     if (int(r) >= int(QMetaMethodInvoker::InvokeFailReason::FormalParameterMismatch)) {
         int n = int(r) - int(QMetaMethodInvoker::InvokeFailReason::FormalParameterMismatch);
-        QByteArray callee = object->metaObject()->className() + QByteArrayView("::")
+        QByteArray callee = webChannel->metaObject(object)->className() + QByteArrayView("::")
                 + method.methodSignature();
         qWarning() << "Cannot convert formal parameter" << n << "from" << names[n + 1]
                    << "in call to" << callee.constData();
@@ -628,7 +628,7 @@ QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const QMetaMe
 QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const int methodIndex,
                                             const QJsonArray &args)
 {
-    const QMetaMethod &method = object->metaObject()->method(methodIndex);
+    const QMetaMethod &method = webChannel->metaObject(object)->method(methodIndex);
     if (!method.isValid()) {
         qWarning() << "Cannot invoke method of unknown index" << methodIndex << "on object"
                    << object << '.';
@@ -648,7 +648,7 @@ QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const QByteAr
 
     QList<OverloadResolutionCandidate> candidates;
 
-    const QMetaObject *mo = object->metaObject();
+    const QMetaObject *mo = webChannel->metaObject(object);
     for (int i = 0; i < mo->methodCount(); ++i) {
         QMetaMethod method = mo->method(i);
         if (method.name() != methodName || method.parameterCount() != args.count()
@@ -681,7 +681,7 @@ QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const QByteAr
 
 void QMetaObjectPublisher::setProperty(QObject *object, const int propertyIndex, const QJsonValue &value)
 {
-    QMetaProperty property = object->metaObject()->property(propertyIndex);
+    QMetaProperty property = webChannel->metaObject(object)->property(propertyIndex);
     if (!property.isValid()) {
         qWarning() << "Cannot set unknown property" << propertyIndex << "of object" << object;
     } else if (!webChannel->writeProperty(object, property, toVariant(value, property.userType()))) {
@@ -1260,6 +1260,11 @@ void QMetaObjectPublisher::onBlockUpdatesChanged()
 bool QMetaObjectPublisher::blockUpdates() const
 {
     return blockUpdatesStatus;
+}
+
+const QMetaObject *QMetaObjectPublisher::metaObject(const QObject *object) const
+{
+    return webChannel->metaObject(object);
 }
 
 void QMetaObjectPublisher::timerEvent(QTimerEvent *event)

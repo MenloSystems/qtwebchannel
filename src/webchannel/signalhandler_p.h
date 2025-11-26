@@ -137,7 +137,7 @@ inline QMetaMethod findSignal(const QMetaObject *metaObject, const int signalInd
 template<class Receiver>
 void SignalHandler<Receiver>::connectTo(const QObject *object, const int signalIndex)
 {
-    const QMetaObject *metaObject = object->metaObject();
+    const QMetaObject *metaObject = m_receiver->metaObject(object);
     const QMetaMethod &signal = findSignal(metaObject, signalIndex);
     if (!signal.isValid()) {
         return;
@@ -186,8 +186,17 @@ void SignalHandler<Receiver>::setupSignalArgumentTypes(const QMetaObject *metaOb
 template<class Receiver>
 void SignalHandler<Receiver>::dispatch(const QObject *object, const int signalIdx, void **argumentData)
 {
-    Q_ASSERT(m_signalArgumentTypes.contains(object->metaObject()));
-    const QHash<int, QList<int>> &objectSignalArgumentTypes = m_signalArgumentTypes.value(object->metaObject());
+    // ~QObject() emits destroyed(), and it runs after the destructor of the
+    // class that declared the object, so metaObject() gives QObject by then.
+    // The constructor registered the arguments of that signal for exactly
+    // this case. Asking the receiver instead would hand it a QObject that is
+    // half gone, and a receiver that builds a metaobject of its own would
+    // build one that nothing registered arguments for.
+    const auto metaObject = signalIdx == s_destroyedSignalIndex
+            ? &QObject::staticMetaObject
+            : m_receiver->metaObject(object);
+    Q_ASSERT(m_signalArgumentTypes.contains(metaObject));
+    const QHash<int, QList<int>> &objectSignalArgumentTypes = m_signalArgumentTypes.value(metaObject);
     QHash<int, QList<int>>::const_iterator signalIt = objectSignalArgumentTypes.constFind(signalIdx);
     if (signalIt == objectSignalArgumentTypes.constEnd()) {
         // not connected to this signal, skip
@@ -236,7 +245,7 @@ int SignalHandler<Receiver>::qt_metacall(QMetaObject::Call call, int methodId, v
         const QObject *object = sender();
         Q_ASSERT(object);
         Q_ASSERT(QThread::currentThread() == object->thread());
-        Q_ASSERT(senderSignalIndex() == methodId);
+        Q_ASSERT(senderSignalIndex() < 0 || senderSignalIndex() == methodId);
         Q_ASSERT(m_connectionsCounter.contains(object));
         Q_ASSERT(m_connectionsCounter.value(object).contains(methodId));
 

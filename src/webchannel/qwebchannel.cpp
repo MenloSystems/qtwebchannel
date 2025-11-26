@@ -365,6 +365,12 @@ QObject *QWebChannel::unwrapObject(QObject *object)
     return object;
 }
 
+const QMetaObject *QWebChannel::metaObject(const QObject *object)
+{
+    return object ? object->metaObject()
+                  : nullptr;
+}
+
 QT_END_NAMESPACE
 
 #include "moc_qwebchannel.cpp"

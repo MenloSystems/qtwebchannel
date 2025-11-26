@@ -60,6 +60,8 @@ protected:
     virtual QObject *wrapObject(QObject *object);
     virtual QObject *unwrapObject(QObject *object);
 
+    virtual const QMetaObject *metaObject(const QObject *object);
+
 private:
     Q_DECLARE_PRIVATE(QWebChannel)
     QWebChannel(QWebChannelPrivate &dd, QObject *parent = nullptr);

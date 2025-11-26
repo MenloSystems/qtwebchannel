@@ -295,6 +295,8 @@ public:
     void setBlockUpdates(bool block);
     bool blockUpdates() const;
 
+    const QMetaObject *metaObject(const QObject *object) const;
+
 Q_SIGNALS:
     void blockUpdatesChanged(bool block);
 
