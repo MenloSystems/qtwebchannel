@@ -909,6 +909,28 @@ void QMetaObjectPublisher::transportRemoved(QWebChannelAbstractTransport *transp
 QJsonValue QMetaObjectPublisher::wrapResult(const QVariant &result, QWebChannelAbstractTransport *transport,
                                             const QString &parentObjectId)
 {
+    // Short-circuit scalars. Avoid converter registry lookups for common cases and improves performance.
+    switch (result.metaType().id()) {
+    case QMetaType::Bool:
+        return QJsonValue(result.toBool());
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::Short:
+    case QMetaType::UShort:
+    case QMetaType::SChar:
+    case QMetaType::UChar:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong:
+    case QMetaType::Float:
+    case QMetaType::Double:
+        return QJsonValue(result.toDouble());
+    case QMetaType::QString:
+    case QMetaType::QByteArray:
+        return QJsonValue(result.toString());
+    default:
+        break;
+    }
+
     if (QObject *object = result.value<QObject *>()) {
         QString id = registeredObjectIds.value(object);
 
