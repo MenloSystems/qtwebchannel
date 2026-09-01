@@ -78,10 +78,16 @@ TestCase {
         WebChannel.id: "testObject"
     }
 
+    ShadowingObject {
+        id: shadowingObject
+        WebChannel.id: "shadowingObject"
+    }
+
     TestWebChannel {
         id: webChannel
         transports: [client.serverTransport]
-        registeredObjects: [myObj, myOtherObj, myValueObj, myFactory, testObject]
+        registeredObjects: [myObj, myOtherObj, myValueObj, myFactory, testObject,
+                            shadowingObject]
     }
     WebChannel {
         id: nullTest
@@ -96,6 +102,7 @@ TestCase {
     function init()
     {
         myObj.myProperty = 1
+        shadowingObject.shadowedProperty = 42
         // immediately send pending updates
         // to avoid property changed signals
         // during run of test case
@@ -168,6 +175,66 @@ TestCase {
         compare(testObject.stringProperty, "baz");
         client.awaitIdle(); // property update
         compare(channel.objects.testObject.stringProperty, "baz");
+    }
+
+    function test_shadowedPropertySentOneTime()
+    {
+        // Ask for the init data without the JavaScript client, because that
+        // client replaces a compressed notify signal name in the message. A
+        // client of an earlier test must not see the response either.
+        client.clientTransport.onmessage = null;
+        client.serverTransport.receiveMessage(JSON.stringify(
+            {type: JSClient.QWebChannelMessageTypes.init, id: 1}));
+        var data = client.awaitResponse().data.shadowingObject;
+
+        var entries = data.properties.filter(function(entry) {
+            return entry[1] === "shadowedProperty";
+        });
+        compare(entries.length, 1);
+
+        // The entry that stays must be the one of ShadowingObject: its value
+        // is the value of the shadowing property, and its notify signal name
+        // follows the property name, which the publisher compresses to a 1.
+        compare(entries[0][3], 42);
+        compare(entries[0][2][0], 1);
+
+        // The notify signal of the shadowed property must stay out of the
+        // signal list.
+        var signalNames = data.signals.map(function(entry) {
+            return entry[0];
+        });
+        compare(signalNames.indexOf("shadowedBaseValueChanged"), -1);
+    }
+
+    function test_shadowedPropertyUpdate()
+    {
+        var channel = client.createChannel(function(channel) {
+            channel.objects.shadowingObject.shadowedProperty = 7;
+        });
+
+        client.awaitInit();
+        client.awaitResponse();
+
+        // The client writes through the index of the shadowing property, so
+        // the write arrives in its setter. The shadowed property has none.
+        var msg = client.awaitMessage();
+        compare(msg.type, JSClient.QWebChannelMessageTypes.setProperty);
+        compare(msg.object, "shadowingObject");
+        compare(shadowingObject.shadowedProperty, 7);
+
+        client.awaitIdle(); // init
+
+        // A change of the shadowing property reaches the client.
+        shadowingObject.shadowedProperty = 8;
+        client.awaitIdle(); // property update
+        client.awaitPropertyUpdate();
+        compare(channel.objects.shadowingObject.shadowedProperty, 8);
+
+        // The notify signal of the shadowed property sends nothing, because
+        // the client does not know that property.
+        shadowingObject.emitShadowedBaseValueChanged();
+        initChannel();
+        compare(client.serverMessages.length, 0);
     }
 
     function test_method()

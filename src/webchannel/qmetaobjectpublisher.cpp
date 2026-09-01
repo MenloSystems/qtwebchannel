@@ -288,10 +288,30 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
     QJsonObject qtEnums;
 
     const QMetaObject *metaObject = object->metaObject();
+
+    // A metaobject can declare the same property name more than once, e.g.
+    // where a class re-declares a property of its superclass. The client
+    // applies the property entries in order, so only the last entry of a name
+    // has an effect. Send that entry only.
+    QHash<QByteArrayView, int> lastPropertyIndex;
+    lastPropertyIndex.reserve(metaObject->propertyCount());
+    for (int i = 0; i < metaObject->propertyCount(); ++i) {
+        lastPropertyIndex.insert(metaObject->property(i).name(), i);
+    }
+
     QSet<int> notifySignals;
     QSet<QString> identifiers;
     for (int i = 0; i < metaObject->propertyCount(); ++i) {
         const QMetaProperty &prop = metaObject->property(i);
+        if (lastPropertyIndex.value(prop.name()) != i) {
+            // Keep the notify signal of the shadowed property out of the
+            // signal list. The client gets the updates through the property
+            // that shadows it.
+            if (prop.hasNotifySignal()) {
+                notifySignals << prop.notifySignalIndex();
+            }
+            continue;
+        }
         QJsonArray propertyInfo;
         const QString &propertyName = QString::fromLatin1(prop.name());
         propertyInfo.append(i);

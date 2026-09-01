@@ -79,4 +79,38 @@ QObject* TestObject::createQObject() {
      return new QObject(this);
 }
 
+ShadowedObject::ShadowedObject(QObject *parent)
+    : QObject(parent)
+{
+}
+
+int ShadowedObject::shadowedBaseValue() const
+{
+    return 1;
+}
+
+void ShadowedObject::emitShadowedBaseValueChanged()
+{
+    emit shadowedBaseValueChanged();
+}
+
+ShadowingObject::ShadowingObject(QObject *parent)
+    : ShadowedObject(parent)
+{
+}
+
+int ShadowingObject::shadowedProperty() const
+{
+    return m_shadowedProperty;
+}
+
+void ShadowingObject::setShadowedProperty(int shadowedProperty)
+{
+    if (m_shadowedProperty == shadowedProperty)
+        return;
+
+    m_shadowedProperty = shadowedProperty;
+    emit shadowedPropertyChanged();
+}
+
 QT_END_NAMESPACE
