@@ -132,8 +132,38 @@ public:
      * Initialize clients by sending them the class information of the registered objects.
      *
      * Furthermore, if that was not done already, connect to their property notify signals.
+     *
+     * When the payload verification is on, this builds the payload two times
+     * and compares the bytes. See InitVerification.
      */
     QJsonObject initializeClient(QWebChannelAbstractTransport *transport);
+
+    /**
+     * Build the class information of all registered objects.
+     */
+    QJsonObject buildInitPayload(QWebChannelAbstractTransport *transport);
+
+    /**
+     * Build the init payload a second time from the object ids and the
+     * property values that @p reference used, and compare the bytes of the two
+     * payloads.
+     */
+    void verifyInitPayload(QWebChannelAbstractTransport *transport,
+                           const QJsonObject &reference);
+
+    /**
+     * The object id of a newly wrapped object.
+     *
+     * Records or replays the id while the payload verification runs.
+     */
+    QString createObjectId();
+
+    /**
+     * The value of @p property of @p object for an init payload.
+     *
+     * Records or replays the value while the payload verification runs.
+     */
+    QVariant readPropertyForInit(const QObject *object, const QMetaProperty &property);
 
     /**
      * Go through all properties of the given object and connect to their notify signal.
@@ -368,6 +398,33 @@ private:
     QHash<QString, ObjectInfo> wrappedObjects;
     // Map of transports to wrapped object ids
     QMultiHash<QWebChannelAbstractTransport*, QString> transportedWrappedObjects;
+
+    // Keeps the object ids and the property values of one init payload, so
+    // that a second build of the same payload can replay them.
+    //
+    // A byte comparison of two payloads is only possible with such a replay:
+    // a new build gives a new UUID to each wrapped object, and a value that
+    // changes between two reads, e.g. a clock, differs in every build.
+    //
+    // The verification is off unless QWEBCHANNEL_VERIFY_INIT is set. Set it to
+    // "abort" to end the process at the first difference, which makes every
+    // test that connects a client a test of the payload.
+    struct InitVerification
+    {
+        QList<QString> objectIds;
+        QList<QVariant> propertyValues;
+        qsizetype nextObjectId = 0;
+        qsizetype nextPropertyValue = 0;
+
+        // True while the second build runs.
+        bool replaying = false;
+        // True when the second build asked for more ids or values than the
+        // first build recorded.
+        bool exhausted = false;
+    };
+
+    // Non-null only while an init payload is built with the verification on.
+    InitVerification *initVerification = nullptr;
 
     // Map of objects to maps of signal indices to a set of all their property indices.
     // The last value is a set as a signal can be the notify signal of multiple properties.

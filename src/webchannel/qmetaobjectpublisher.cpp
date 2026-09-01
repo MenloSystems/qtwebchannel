@@ -221,6 +221,45 @@ void attachContinuationToFutureInVariant(const QVariant &result, QPointer<QObjec
 }
 #endif
 
+enum class VerifyInitMode {
+    Disabled,
+    Warn,
+    Abort,
+};
+
+VerifyInitMode verifyInitMode()
+{
+    static const VerifyInitMode mode = [] {
+        const QByteArray value = qgetenv("QWEBCHANNEL_VERIFY_INIT");
+        if (value.isEmpty() || value == "0")
+            return VerifyInitMode::Disabled;
+        if (value == "abort")
+            return VerifyInitMode::Abort;
+        return VerifyInitMode::Warn;
+    }();
+    return mode;
+}
+
+// Length of the context that reportInitDifference() prints on each side of the
+// first difference.
+constexpr qsizetype ContextBytes = 60;
+
+void reportInitDifference(const QByteArray &reference, const QByteArray &candidate)
+{
+    const qsizetype common = qMin(reference.size(), candidate.size());
+    qsizetype at = 0;
+    while (at < common && reference.at(at) == candidate.at(at))
+        ++at;
+
+    const qsizetype from = qMax(qsizetype(0), at - ContextBytes);
+    qWarning().noquote().nospace()
+            << "QWebChannel: the init payload differs at byte " << at
+            << " (reference " << reference.size() << " bytes, candidate "
+            << candidate.size() << " bytes)\n"
+            << "  reference: " << reference.mid(from, 2 * ContextBytes) << "\n"
+            << "  candidate: " << candidate.mid(from, 2 * ContextBytes);
+}
+
 }
 
 Q_DECLARE_TYPEINFO(OverloadResolutionCandidate, Q_RELOCATABLE_TYPE);
@@ -337,7 +376,7 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
                      prop.name(), webChannel->metaObject(object)->className());
         }
         propertyInfo.append(signalInfo);
-        propertyInfo.append(wrapResult(webChannel->readProperty(object, prop), transport));
+        propertyInfo.append(wrapResult(readPropertyForInit(object, prop), transport));
         qtProperties.append(propertyInfo);
     }
     auto addMethod = [&qtSignals, &qtMethods, &identifiers](int i, const QMetaMethod &method, const QByteArray &rawName) {
@@ -399,6 +438,66 @@ bool QMetaObjectPublisher::isClientIdle(QWebChannelAbstractTransport *transport)
 
 QJsonObject QMetaObjectPublisher::initializeClient(QWebChannelAbstractTransport *transport)
 {
+    if (verifyInitMode() == VerifyInitMode::Disabled)
+        return buildInitPayload(transport);
+
+    // The walk gives an id to each object that it wraps. Save that state, so
+    // that the second build starts where the first build started, and put the
+    // state of the first build back afterwards, because that is the state the
+    // client of this payload works with.
+    const auto objectIdsBefore = registeredObjectIds;
+    const auto wrappedObjectsBefore = wrappedObjects;
+    const auto transportedBefore = transportedWrappedObjects;
+
+    InitVerification verification;
+    initVerification = &verification;
+    const QJsonObject reference = buildInitPayload(transport);
+
+    const auto objectIdsAfter = registeredObjectIds;
+    const auto wrappedObjectsAfter = wrappedObjects;
+    const auto transportedAfter = transportedWrappedObjects;
+
+    registeredObjectIds = objectIdsBefore;
+    wrappedObjects = wrappedObjectsBefore;
+    transportedWrappedObjects = transportedBefore;
+
+    verification.replaying = true;
+    verifyInitPayload(transport, reference);
+    initVerification = nullptr;
+
+    registeredObjectIds = objectIdsAfter;
+    wrappedObjects = wrappedObjectsAfter;
+    transportedWrappedObjects = transportedAfter;
+
+    return reference;
+}
+
+void QMetaObjectPublisher::verifyInitPayload(QWebChannelAbstractTransport *transport,
+                                             const QJsonObject &reference)
+{
+    Q_ASSERT(initVerification && initVerification->replaying);
+
+    const QJsonObject candidate = buildInitPayload(transport);
+
+    const QByteArray referenceBytes = QJsonDocument(reference).toJson(QJsonDocument::Compact);
+    const QByteArray candidateBytes = QJsonDocument(candidate).toJson(QJsonDocument::Compact);
+
+    bool equal = referenceBytes == candidateBytes;
+    if (!equal)
+        reportInitDifference(referenceBytes, candidateBytes);
+
+    if (initVerification->exhausted) {
+        qWarning("QWebChannel: the second build of the init payload asked for more "
+                 "object ids or property values than the first build recorded");
+        equal = false;
+    }
+
+    if (!equal && verifyInitMode() == VerifyInitMode::Abort)
+        qFatal("QWebChannel: the init payload is not reproducible");
+}
+
+QJsonObject QMetaObjectPublisher::buildInitPayload(QWebChannelAbstractTransport *transport)
+{
     QJsonObject objectInfos;
     {
         const QHash<QString, QObject *>::const_iterator end = registeredObjects.constEnd();
@@ -412,6 +511,45 @@ QJsonObject QMetaObjectPublisher::initializeClient(QWebChannelAbstractTransport 
     }
     propertyUpdatesInitialized = true;
     return objectInfos;
+}
+
+QString QMetaObjectPublisher::createObjectId()
+{
+    if (!initVerification)
+        return QUuid::createUuid().toString();
+
+    if (!initVerification->replaying) {
+        const QString id = QUuid::createUuid().toString();
+        initVerification->objectIds.append(id);
+        return id;
+    }
+
+    if (initVerification->nextObjectId >= initVerification->objectIds.size()) {
+        initVerification->exhausted = true;
+        return QStringLiteral("{no-recorded-id}");
+    }
+
+    return initVerification->objectIds.at(initVerification->nextObjectId++);
+}
+
+QVariant QMetaObjectPublisher::readPropertyForInit(const QObject *object,
+                                                   const QMetaProperty &property)
+{
+    if (!initVerification)
+        return webChannel->readProperty(object, property);
+
+    if (!initVerification->replaying) {
+        const QVariant value = webChannel->readProperty(object, property);
+        initVerification->propertyValues.append(value);
+        return value;
+    }
+
+    if (initVerification->nextPropertyValue >= initVerification->propertyValues.size()) {
+        initVerification->exhausted = true;
+        return QVariant();
+    }
+
+    return initVerification->propertyValues.at(initVerification->nextPropertyValue++);
 }
 
 void QMetaObjectPublisher::initializePropertyUpdates(QObject *const object, const QJsonObject &objectInfo)
@@ -922,7 +1060,7 @@ QJsonValue QMetaObjectPublisher::wrapResult(const QVariant &result, QWebChannelA
         QJsonObject classInfo;
         if (id.isEmpty()) {
             // neither registered, nor wrapped, do so now
-            id = QUuid::createUuid().toString();
+            id = createObjectId();
             // store ID before the call to classInfoForObject()
             // in case of self-contained objects it avoids
             // infinite loops
@@ -947,7 +1085,11 @@ QJsonValue QMetaObjectPublisher::wrapResult(const QVariant &result, QWebChannelA
             }
             wrappedObjects.insert(id, oi);
 
-            initializePropertyUpdates(object, classInfo);
+            // The second build of an init payload must not connect a
+            // second time.
+            if (!initVerification || !initVerification->replaying) {
+                initializePropertyUpdates(object, classInfo);
+            }
         } else {
             auto oi = wrappedObjects.find(id);
             if (oi != wrappedObjects.end() && !oi->isBeingWrapped) {
