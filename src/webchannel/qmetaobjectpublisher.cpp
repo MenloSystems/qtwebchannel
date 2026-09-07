@@ -490,7 +490,9 @@ void QMetaObjectPublisher::sendPendingPropertyUpdates()
 
         const auto sigMap = it.value().signalMap;
         for (auto sigIt = sigMap.constBegin(); sigIt != sigMap.constEnd(); ++sigIt) {
-            sigs[QString::number(sigIt.key())] = QJsonArray::fromVariantList(sigIt.value());
+            QVariantList arguments = sigIt.value();
+            webChannel->signalArguments(object, sigIt.key(), arguments);
+            sigs[QString::number(sigIt.key())] = QJsonArray::fromVariantList(arguments);
         }
 
         QJsonObject obj;
@@ -655,7 +657,9 @@ void QMetaObjectPublisher::signalEmitted(const QObject *object, const int signal
         message[KEY_OBJECT] = objectName;
         message[KEY_SIGNAL] = signalIndex;
         if (!arguments.isEmpty()) {
-            message[KEY_ARGS] = wrapList(arguments, nullptr, objectName);
+            QVariantList args = arguments;
+            webChannel->signalArguments(object, signalIndex, args);
+            message[KEY_ARGS] = wrapList(args, nullptr, objectName);
         }
         message[KEY_TYPE] = TypeSignal;
 

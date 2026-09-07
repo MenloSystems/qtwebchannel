@@ -433,6 +433,28 @@ const QMetaObject *QWebChannel::metaObject(const QObject *object)
                   : nullptr;
 }
 
+/*!
+    Gives the arguments of the signal \a signalIndex of \a object in
+    \a arguments, and answers true, if this channel gives its own arguments.
+
+    \a signalIndex is an index into metaObject(\a object). \a arguments holds
+    the arguments of the emission when the publisher calls this.
+
+    One emission goes to each channel that holds \a object, so all of them
+    send the same arguments. An implementation can answer arguments for its
+    own clients, e.g. arguments that follow the access level of the channel.
+    The default implementation answers false and keeps the arguments of the
+    emission.
+*/
+bool QWebChannel::signalArguments(const QObject *object, int signalIndex,
+                                  QVariantList &arguments)
+{
+    Q_UNUSED(object);
+    Q_UNUSED(signalIndex);
+    Q_UNUSED(arguments);
+    return false;
+}
+
 QT_END_NAMESPACE
 
 #include "moc_qwebchannel.cpp"

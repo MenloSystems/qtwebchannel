@@ -62,6 +62,9 @@ protected:
 
     virtual const QMetaObject *metaObject(const QObject *object);
 
+    virtual bool signalArguments(const QObject *object, int signalIndex,
+                                 QVariantList &arguments);
+
 private:
     Q_DECLARE_PRIVATE(QWebChannel)
     QWebChannel(QWebChannelPrivate &dd, QObject *parent = nullptr);
