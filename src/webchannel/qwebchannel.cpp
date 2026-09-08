@@ -434,6 +434,24 @@ const QMetaObject *QWebChannel::metaObject(const QObject *object)
 }
 
 /*!
+    Gives the JSON form of \a value in \a result, and answers true, if this
+    channel can give it.
+
+    The default implementation answers false, and the publisher then builds the
+    JSON form itself. An implementation can answer a value from a cache.
+
+    \note An implementation must answer false for a value that holds a QObject.
+    The id of a wrapped object belongs to a transport, so the publisher must
+    build that form itself.
+*/
+bool QWebChannel::wrapValue(const QVariant &value, QJsonValue &result)
+{
+    Q_UNUSED(value);
+    Q_UNUSED(result);
+    return false;
+}
+
+/*!
     Gives the arguments of the signal \a signalIndex of \a object in
     \a arguments, and answers true, if this channel gives its own arguments.
 

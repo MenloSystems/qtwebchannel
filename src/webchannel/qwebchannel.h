@@ -62,6 +62,8 @@ protected:
 
     virtual const QMetaObject *metaObject(const QObject *object);
 
+    virtual bool wrapValue(const QVariant &value, QJsonValue &result);
+
     virtual bool signalArguments(const QObject *object, int signalIndex,
                                  QVariantList &arguments);
 

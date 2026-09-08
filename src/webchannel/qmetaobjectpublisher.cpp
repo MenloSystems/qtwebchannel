@@ -1167,6 +1167,19 @@ QJsonValue QMetaObjectPublisher::wrapResult(const QVariant &result, QWebChannelA
         break;
     }
 
+    // The channel can answer the value itself, e.g. from a cache. It must not
+    // answer a value that holds a QObject: the id of a wrapped object belongs
+    // to a transport.
+    //
+    // The recording build of the payload verification does not ask the
+    // channel, so that the comparison checks the answer of the channel against
+    // a fresh build of the value.
+    if (!initVerification || initVerification->replaying) {
+        QJsonValue answer;
+        if (webChannel->wrapValue(result, answer))
+            return answer;
+    }
+
     if (QObject *object = result.value<QObject *>()) {
         object = webChannel->wrapObject(object);
         if (!object) {
