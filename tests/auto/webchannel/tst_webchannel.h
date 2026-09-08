@@ -258,6 +258,9 @@ private slots:
     void testDeregisterObjects();
     void testDeregisterObjectAtStart();
     void testInfoForObject();
+    void testClassInfoPlanEndsWithItsObject();
+    void testClassInfoPlanSharedByObjectsOfAClass();
+    void testClassInfoPlanStaysWhenTheLastClientGoes();
     void testInvokeMethodConversion();
     void testFunctionOverloading();
     void testSetPropertyConversion();

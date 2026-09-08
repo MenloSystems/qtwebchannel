@@ -24,10 +24,12 @@
 #include <QBasicTimer>
 #include <QPointer>
 #include <QProperty>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QQueue>
 #include <QSet>
 
+#include <memory>
 #include <unordered_map>
 
 class tst_bench_QWebChannel;
@@ -117,6 +119,61 @@ public:
      * Serialize the QMetaObject of @p object and return it in JSON form.
      */
     QJsonObject classInfoForObject(const QObject *object, QWebChannelAbstractTransport *transport);
+
+    /**
+     * The parts of a class information that only depend on the metaobject: the
+     * signals, the methods, the enumerators, and the [index, name, notify]
+     * prefix of each property entry that the payload holds.
+     *
+     * Only the property values depend on the object, so one plan serves all
+     * objects of a class. A copy of a QJsonArray or a QJsonObject of the plan
+     * is a reference count operation, not a copy of the data.
+     */
+    struct ClassInfoPlan
+    {
+        QJsonArray qtSignals;
+        QJsonArray qtMethods;
+        QJsonObject qtEnums;
+
+        struct PropertyPlan
+        {
+            // [index, name, notifySignal]. The value goes behind it.
+            QJsonArray prefix;
+            // Index of the property in the metaobject of the plan. The plan
+            // keeps no QMetaProperty, because that holds pointers into the
+            // metaobject that declares the property.
+            int propertyIndex = -1;
+        };
+        QList<PropertyPlan> properties;
+    };
+
+    /**
+     * Build the plan of @p metaObject. The result holds no state of an object.
+     */
+    ClassInfoPlan buildClassInfoPlan(const QMetaObject *metaObject);
+
+    /**
+     * The cached plan of @p metaObject, built at the first call.
+     *
+     * The caller keeps the handle for as long as it can ask for the plan of
+     * @p metaObject again. See planForObject.
+     */
+    std::shared_ptr<const ClassInfoPlan> classInfoPlan(const QMetaObject *metaObject);
+
+    /**
+     * Keep the plan of the class of @p object after the export of @p object
+     * ends, because @p object is alive.
+     *
+     * A watch of the destroyed signal of @p object releases the plan. Call
+     * this before objectDestroyed(), which drops the handle of a plan.
+     */
+    void detachPlan(QObject *object);
+
+    /**
+     * Release the plan that detachPlan() kept for @p object, because the
+     * publisher exports @p object again and holds the plan itself again.
+     */
+    void releaseDetachedPlan(const QObject *object);
 
     /**
      * Set the client to idle or busy for a single @p transport, based on the value of @p isIdle.
@@ -425,6 +482,37 @@ private:
 
     // Non-null only while an init payload is built with the verification on.
     InitVerification *initVerification = nullptr;
+
+    // The plan of each class that a payload of this channel held.
+    //
+    // A plan lives as long as an object that uses it, and no longer. The
+    // metaobject of a live object is alive, so the key of an entry that a
+    // lookup can reach is alive too. A metaobject with the AllocatedMetaObject
+    // flag can be freed and another one can then take its address, but the
+    // entry of the freed one is gone before that.
+    //
+    // The last handle of a plan erases the entry, so the map holds no
+    // tombstones and needs no sweep.
+    QHash<const QMetaObject *, std::weak_ptr<const ClassInfoPlan>> classInfoPlans;
+
+    // The plan handle of each object that this publisher tracks. Holds the
+    // plans of classInfoPlans alive. Mirrors registeredObjectIds:
+    // classInfoForObject() takes a handle and objectDestroyed() drops it.
+    QHash<const QObject *, std::shared_ptr<const ClassInfoPlan>> planForObject;
+
+    // The plan of the class of an object that the publisher does not export
+    // any more, but that is alive. The last client of a wrapped object can go
+    // while the application keeps the object, and the next client then gets
+    // the plan of the first one.
+    //
+    // The watch of the destroyed signal releases the plan. The connection is
+    // in the record, so that a new export of the object can end the watch.
+    struct DetachedPlan
+    {
+        std::shared_ptr<const ClassInfoPlan> plan;
+        QMetaObject::Connection watch;
+    };
+    QHash<const QObject *, DetachedPlan> detachedPlans;
 
     // Map of objects to maps of signal indices to a set of all their property indices.
     // The last value is a set as a signal can be the notify signal of multiple properties.

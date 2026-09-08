@@ -297,7 +297,11 @@ QMetaObjectPublisher::QMetaObjectPublisher(QWebChannel *webChannel)
 
 QMetaObjectPublisher::~QMetaObjectPublisher()
 {
-
+    // Drops the last handle of every plan, and each of those erases its entry
+    // of classInfoPlans. Do that here, so that the order does not depend on
+    // the order of the members.
+    planForObject.clear();
+    detachedPlans.clear();
 }
 
 void QMetaObjectPublisher::registerObject(const QString &id, QObject *object)
@@ -313,34 +317,31 @@ void QMetaObjectPublisher::registerObject(const QString &id, QObject *object)
     }
 }
 
-QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWebChannelAbstractTransport *transport)
+QMetaObjectPublisher::ClassInfoPlan
+QMetaObjectPublisher::buildClassInfoPlan(const QMetaObject *metaObject)
 {
-    QJsonObject data;
-    if (!object) {
-        qWarning("null object given to MetaObjectPublisher - bad API usage?");
-        return data;
-    }
+    ClassInfoPlan plan;
+    const int propertyCount = metaObject->propertyCount();
+    const int methodCount = metaObject->methodCount();
+    const int enumeratorCount = metaObject->enumeratorCount();
 
     QJsonArray qtSignals;
     QJsonArray qtMethods;
-    QJsonArray qtProperties;
     QJsonObject qtEnums;
-
-    const QMetaObject *metaObject = webChannel->metaObject(object);
 
     // A metaobject can declare the same property name more than once, e.g.
     // where a class re-declares a property of its superclass. The client
     // applies the property entries in order, so only the last entry of a name
     // has an effect. Send that entry only.
     QHash<QByteArrayView, int> lastPropertyIndex;
-    lastPropertyIndex.reserve(metaObject->propertyCount());
-    for (int i = 0; i < metaObject->propertyCount(); ++i) {
+    lastPropertyIndex.reserve(propertyCount);
+    for (int i = 0; i < propertyCount; ++i) {
         lastPropertyIndex.insert(metaObject->property(i).name(), i);
     }
 
     QSet<int> notifySignals;
     QSet<QString> identifiers;
-    for (int i = 0; i < metaObject->propertyCount(); ++i) {
+    for (int i = 0; i < propertyCount; ++i) {
         const QMetaProperty &prop = metaObject->property(i);
         if (lastPropertyIndex.value(prop.name()) != i) {
             // Keep the notify signal of the shadowed property out of the
@@ -373,12 +374,12 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
         } else if (!prop.isConstant() && !prop.isBindable()) {
             qWarning("Property '%s'' of object '%s' has no notify signal, is not bindable and is not constant, "
                      "value updates in HTML will be broken!",
-                     prop.name(), webChannel->metaObject(object)->className());
+                     prop.name(), metaObject->className());
         }
         propertyInfo.append(signalInfo);
-        propertyInfo.append(wrapResult(readPropertyForInit(object, prop), transport));
-        qtProperties.append(propertyInfo);
+        plan.properties.append({propertyInfo, i});
     }
+
     auto addMethod = [&qtSignals, &qtMethods, &identifiers](int i, const QMetaMethod &method, const QByteArray &rawName) {
         //NOTE: the name must be a string, otherwise it will be converted to '{}' in QML
         const auto name = QString::fromLatin1(rawName);
@@ -397,7 +398,7 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
             qtMethods.append(data);
         }
     };
-    for (int i = 0; i < metaObject->methodCount(); ++i) {
+    for (int i = 0; i < methodCount; ++i) {
         if (notifySignals.contains(i)) {
             continue;
         }
@@ -406,7 +407,7 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
         // for overload resolution also pass full method signature
         addMethod(i, method, method.methodSignature());
     }
-    for (int i = 0; i < metaObject->enumeratorCount(); ++i) {
+    for (int i = 0; i < enumeratorCount; ++i) {
         QMetaEnum enumerator = metaObject->enumerator(i);
         QJsonObject values;
         for (int k = 0; k < enumerator.keyCount(); ++k) {
@@ -414,11 +415,120 @@ QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWeb
         }
         qtEnums[QString::fromLatin1(enumerator.name())] = values;
     }
-    data[KEY_SIGNALS] = qtSignals;
-    data[KEY_METHODS] = qtMethods;
+
+    plan.qtSignals = qtSignals;
+    plan.qtMethods = qtMethods;
+    plan.qtEnums = qtEnums;
+
+    return plan;
+}
+
+std::shared_ptr<const QMetaObjectPublisher::ClassInfoPlan>
+QMetaObjectPublisher::classInfoPlan(const QMetaObject *metaObject)
+{
+    const auto it = classInfoPlans.constFind(metaObject);
+    if (it != classInfoPlans.cend()) {
+        if (std::shared_ptr<const ClassInfoPlan> plan = it->lock())
+            return plan;
+    }
+
+    // The deleter erases the entry, so that the map holds an entry of a live
+    // plan only. It uses metaObject as a key and never reads it, so the
+    // metaobject can be gone by the time the deleter runs.
+    std::shared_ptr<const ClassInfoPlan> plan(
+            new ClassInfoPlan(buildClassInfoPlan(metaObject)),
+            [this, metaObject](const ClassInfoPlan *deleted) {
+                classInfoPlans.remove(metaObject);
+                delete deleted;
+            });
+
+    classInfoPlans.insert(metaObject, plan);
+    return plan;
+}
+
+void QMetaObjectPublisher::detachPlan(QObject *object)
+{
+    const auto handle = planForObject.constFind(object);
+    if (handle == planForObject.cend() || detachedPlans.contains(object))
+        return;
+
+    DetachedPlan detached;
+    detached.plan = *handle;
+    detached.watch = connect(object, &QObject::destroyed, this,
+                             [this](QObject *destroyed) {
+                                 // Only a key here: the object is gone.
+                                 detachedPlans.remove(destroyed);
+                             });
+
+    detachedPlans.insert(object, detached);
+}
+
+void QMetaObjectPublisher::releaseDetachedPlan(const QObject *object)
+{
+    const auto detached = detachedPlans.constFind(object);
+    if (detached == detachedPlans.cend())
+        return;
+
+    disconnect(detached->watch);
+    detachedPlans.erase(detached);
+}
+
+QJsonObject QMetaObjectPublisher::classInfoForObject(const QObject *object, QWebChannelAbstractTransport *transport)
+{
+    QJsonObject data;
+    if (!object) {
+        qWarning("null object given to MetaObjectPublisher - bad API usage?");
+        return data;
+    }
+
+    const QMetaObject *metaObject = webChannel->metaObject(object);
+
+    // A metaobject that the program builds at runtime must get all of its
+    // properties, methods and enumerators before the first payload that holds
+    // an object of that class. The plan holds those parts of the payload, and
+    // a later change of the metaobject does not reach the plan.
+    //
+    // The recording build of the payload verification does not use the cache,
+    // so that the comparison checks the cache against a fresh walk of the
+    // metaobject.
+    const bool cacheable = !(initVerification && !initVerification->replaying);
+
+    std::shared_ptr<const ClassInfoPlan> plan;
+    if (cacheable) {
+        plan = classInfoPlan(metaObject);
+        // Keep the plan for as long as this publisher tracks the object.
+        // objectDestroyed() drops the handle again, and the metaobject of a
+        // tracked object is alive, so a lookup only ever reaches an entry
+        // whose key is alive.
+        //
+        // An object that this publisher does not track gets a plan for this
+        // call alone, because nothing would ever drop its handle.
+        if (registeredObjectIds.contains(object)) {
+            std::shared_ptr<const ClassInfoPlan> &handle = planForObject[object];
+            if (!handle) {
+                handle = plan;
+                // The publisher holds the plan again, so the watch of
+                // detachPlan() has no more work.
+                releaseDetachedPlan(object);
+            }
+        }
+    } else {
+        plan = std::make_shared<const ClassInfoPlan>(buildClassInfoPlan(metaObject));
+    }
+
+    QJsonArray qtProperties;
+    for (const ClassInfoPlan::PropertyPlan &property : plan->properties) {
+        QJsonArray propertyInfo = property.prefix;
+        const QMetaProperty metaProperty = metaObject->property(property.propertyIndex);
+        propertyInfo.append(wrapResult(readPropertyForInit(object, metaProperty), transport));
+        qtProperties.append(propertyInfo);
+    }
+
+    data[KEY_SIGNALS] = plan->qtSignals;
+    data[KEY_METHODS] = plan->qtMethods;
     data[KEY_PROPERTIES] = qtProperties;
-    if (!qtEnums.isEmpty()) {
-        data[KEY_ENUMS] = qtEnums;
+    if (!plan->qtEnums.isEmpty()) {
+        data[KEY_ENUMS] = plan->qtEnums;
     }
     return data;
 }
@@ -856,6 +966,9 @@ void QMetaObjectPublisher::objectDestroyed(const QObject *object)
     }
     pendingPropertyUpdates.remove(object);
     propertyObservers.erase(object);
+    // The plan of the class of this object goes when the last object of that
+    // class goes, and before the metaobject can be freed.
+    planForObject.remove(object);
 }
 
 QObject *QMetaObjectPublisher::unwrapObject(const QString &objectId) const
@@ -1018,8 +1131,12 @@ void QMetaObjectPublisher::transportRemoved(QWebChannelAbstractTransport *transp
 
     transportedWrappedObjects.remove(transport);
 
-    for (QObject *obj : std::as_const(objectsForDeletion))
+    for (QObject *obj : std::as_const(objectsForDeletion)) {
+        // The object is alive: only the last client of the wrapped object
+        // went. So keep the plan of its class for the next client.
+        detachPlan(obj);
         objectDestroyed(obj);
+    }
 }
 
 // NOTE: transport can be a nullptr

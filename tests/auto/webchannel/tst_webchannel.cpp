@@ -8,6 +8,10 @@
 #include <QtWebChannel/private/qwebchannel_p.h>
 #include <QtWebChannel/private/qmetaobjectpublisher_p.h>
 
+#include <QtCore/private/qmetaobjectbuilder_p.h>
+#include <QtCore/private/qobject_p.h>
+#include <QtCore/qtmocconstants.h>
+
 #include <QtTest>
 #include <QtTest/private/qpropertytesthelper_p.h>
 #ifdef WEBCHANNEL_TESTS_CAN_USE_JS_ENGINE
@@ -618,6 +622,161 @@ void TestWebChannel::testInfoForObject()
         }
         QCOMPARE(info["properties"].toArray(), expected);
     }
+}
+
+namespace {
+
+// A metaobject that the program builds at runtime, as QQmlOpenMetaObject
+// builds one. It has the DynamicMetaObject flag and the AllocatedMetaObject
+// flag, and the program frees it.
+class DynamicMetaObject : public QAbstractDynamicMetaObject
+{
+public:
+    explicit DynamicMetaObject(const char *className)
+    {
+        QMetaObjectBuilder builder;
+        builder.setClassName(className);
+        builder.setSuperClass(&QObject::staticMetaObject);
+        builder.setFlags(QtMocConstants::DynamicMetaObject);
+        m_built = builder.toMetaObject();
+        static_cast<QMetaObject &>(*this) = *m_built;
+    }
+
+    ~DynamicMetaObject() { free(m_built); }
+
+private:
+    QMetaObject *m_built = nullptr;
+};
+
+// An object that builds its metaobject at runtime and frees it again, like the
+// objects that a client of a nested channel re-exports.
+//
+// A metaobject with the AllocatedMetaObject flag can be freed, and another
+// metaobject can then take its address. So the cache must hold no entry of a
+// metaobject that is gone.
+class DynamicMetaObjectObject : public QObject
+{
+public:
+    DynamicMetaObjectObject()
+        : m_metaObject("DynamicMetaObjectObject")
+    {
+    }
+
+    const QMetaObject *metaObject() const override { return &m_metaObject; }
+
+    const QMetaObject *builtMetaObject() const { return &m_metaObject; }
+
+private:
+    DynamicMetaObject m_metaObject;
+};
+
+}
+
+void TestWebChannel::testClassInfoPlanEndsWithItsObject()
+{
+    QWebChannel channel;
+    QMetaObjectPublisher *publisher = channel.d_func()->publisher;
+    channel.connectTo(m_dummyTransport);
+
+    // Only a key of the map after the object is gone. The metaobject of that
+    // address is freed by then, so the test never reads it.
+    const QMetaObject *metaObject = nullptr;
+
+    {
+        DynamicMetaObjectObject object;
+        metaObject = object.builtMetaObject();
+
+        channel.registerObject("dynamic", &object);
+        publisher->initializeClient(m_dummyTransport);
+        QVERIFY(publisher->classInfoPlans.contains(metaObject));
+
+        // A second payload of the object uses the plan of the first one.
+        const auto plan = publisher->classInfoPlans.value(metaObject).lock();
+        QVERIFY(plan);
+        publisher->classInfoForObject(&object, m_dummyTransport);
+        QCOMPARE(publisher->classInfoPlans.value(metaObject).lock(), plan);
+    }
+
+    QVERIFY(!publisher->classInfoPlans.contains(metaObject));
+}
+
+void TestWebChannel::testClassInfoPlanSharedByObjectsOfAClass()
+{
+    QWebChannel channel;
+    QMetaObjectPublisher *publisher = channel.d_func()->publisher;
+    channel.connectTo(m_dummyTransport);
+
+    TestObject first;
+    TestObject second;
+    channel.registerObject("first", &first);
+    channel.registerObject("second", &second);
+    publisher->initializeClient(m_dummyTransport);
+
+    const QMetaObject *metaObject = first.metaObject();
+    QCOMPARE(second.metaObject(), metaObject);
+
+    // One plan for the class, not one for each object.
+    QCOMPARE(publisher->classInfoPlans.size(), 1);
+    QVERIFY(publisher->classInfoPlans.contains(metaObject));
+
+    // A weak handle, so that the test itself keeps no plan alive.
+    const auto plan = publisher->classInfoPlans.value(metaObject);
+    QVERIFY(!plan.expired());
+
+    // The plan stays for as long as an object of the class uses it.
+    channel.deregisterObject(&first);
+    QVERIFY(!plan.expired());
+
+    channel.deregisterObject(&second);
+    QVERIFY(plan.expired());
+    QVERIFY(!publisher->classInfoPlans.contains(metaObject));
+}
+
+void TestWebChannel::testClassInfoPlanStaysWhenTheLastClientGoes()
+{
+    QWebChannel channel;
+    QMetaObjectPublisher *publisher = channel.d_func()->publisher;
+
+    auto object = std::make_unique<TestObject>();
+    const QMetaObject *metaObject = object->metaObject();
+
+    auto *transport = new DummyTransport(this);
+    channel.connectTo(transport);
+    publisher->initializeClient(transport);
+    publisher->wrapResult(QVariant::fromValue(object.get()), transport);
+
+    QCOMPARE(publisher->wrappedObjects.size(), 1);
+    const auto plan = publisher->classInfoPlans.value(metaObject);
+    QVERIFY(!plan.expired());
+
+    // The last client of the wrapped object goes, but the object is alive.
+    channel.disconnectFrom(transport);
+    delete transport;
+
+    QCOMPARE(publisher->wrappedObjects.size(), 0);
+    QCOMPARE(publisher->planForObject.size(), 0);
+    QCOMPARE(publisher->detachedPlans.size(), 1);
+    QVERIFY(!plan.expired());
+
+    // The next client gets the plan of the first one, and the watch ends.
+    auto *nextTransport = new DummyTransport(this);
+    channel.connectTo(nextTransport);
+    publisher->initializeClient(nextTransport);
+    publisher->wrapResult(QVariant::fromValue(object.get()), nextTransport);
+
+    QCOMPARE(publisher->classInfoPlans.value(metaObject).lock(), plan.lock());
+    QCOMPARE(publisher->planForObject.size(), 1);
+    QCOMPARE(publisher->detachedPlans.size(), 0);
+
+    channel.disconnectFrom(nextTransport);
+    delete nextTransport;
+
+    // The object goes, and the plan of its class goes with it.
+    object.reset();
+
+    QCOMPARE(publisher->detachedPlans.size(), 0);
+    QVERIFY(plan.expired());
+    QVERIFY(!publisher->classInfoPlans.contains(metaObject));
 }
 
 void TestWebChannel::testInvokeMethodConversion()
