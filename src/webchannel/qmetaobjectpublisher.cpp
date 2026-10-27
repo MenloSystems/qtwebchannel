@@ -836,11 +836,27 @@ QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const QMetaMe
 QVariant QMetaObjectPublisher::invokeMethod(QObject *const object, const int methodIndex,
                                             const QJsonArray &args)
 {
-    const QMetaMethod &method = webChannel->metaObject(object)->method(methodIndex);
+    const QMetaObject *mo = webChannel->metaObject(object);
+    QMetaMethod method = mo->method(methodIndex);
     if (!method.isValid()) {
         qWarning() << "Cannot invoke method of unknown index" << methodIndex << "on object"
                    << object << '.';
         return QJsonValue();
+    }
+
+    // For a method with default arguments, moc emits the full method and then
+    // one clone per omitted trailing argument. If the client gave fewer
+    // arguments, call the clone that takes exactly that many.
+    if (args.size() < method.parameterCount()) {
+        for (int i = methodIndex + 1; i < mo->methodCount(); ++i) {
+            const QMetaMethod clone = mo->method(i);
+            if (!(clone.attributes() & QMetaMethod::Cloned))
+                break;
+            if (clone.parameterCount() == args.size()) {
+                method = clone;
+                break;
+            }
+        }
     }
     return invokeMethod(object, method, args);
 }

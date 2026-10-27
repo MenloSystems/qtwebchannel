@@ -246,6 +246,9 @@ public slots:
     QString readOverload(const QString &arg);
     QString readOverload(const QString &arg, int i);
 
+    QString joinWithDefaults(const QString &a, int b = 7,
+                             const QString &c = QStringLiteral("dflt"));
+
 signals:
     void lastIntChanged();
     void lastBoolChanged();
@@ -265,6 +268,7 @@ private slots:
     void testClassInfoPlanStaysWhenTheLastClientGoes();
     void testInvokeMethodConversion();
     void testFunctionOverloading();
+    void methodWithDefaultArguments_fewerArgumentsGiven_usesDeclaredDefaults_issue19968();
     void testSetPropertyConversion();
     void testInvokeMethodOverloadResolution();
     void testDisconnect();

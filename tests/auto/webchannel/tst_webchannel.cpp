@@ -397,6 +397,12 @@ QString TestWebChannel::readOverload(const QString &arg, int i)
     return arg.toUpper() + QString::number(i + 1);
 }
 
+QString TestWebChannel::joinWithDefaults(const QString &a, int b,
+                                         const QString &c)
+{
+    return a + QLatin1Char('|') + QString::number(b) + QLatin1Char('|') + c;
+}
+
 void TestWebChannel::testRegisterObjects()
 {
     QWebChannel channel;
@@ -903,6 +909,34 @@ void TestWebChannel::testFunctionOverloading()
         const auto retVal = channel.d_func()->publisher->invokeMethod(this, method3, QJsonArray{QStringLiteral("the answer is "), 41});
         QCOMPARE(retVal.toString(), QStringLiteral("THE ANSWER IS 42"));
     }
+}
+
+/**
+ * @scenario Client omits trailing arguments that have C++ default values
+ * @given Exported method with two defaulted trailing parameters
+ * @when  It is invoked by the index of the full signature with fewer arguments
+ * @then  The declared defaults are used for the omitted arguments
+ * @issue 19968
+ */
+void TestWebChannel::methodWithDefaultArguments_fewerArgumentsGiven_usesDeclaredDefaults_issue19968()
+{
+    // GIVEN: A channel and the index of the full method signature.
+    QWebChannel channel;
+    channel.connectTo(m_dummyTransport);
+    const auto fullIndex = metaObject()->indexOfMethod(
+        "joinWithDefaults(QString,int,QString)");
+    QVERIFY(fullIndex != -1);
+    QMetaObjectPublisher *publisher = channel.d_func()->publisher;
+    const QJsonArray oneArg{QStringLiteral("x")};
+    const QJsonArray twoArgs{QStringLiteral("x"), 3};
+
+    // WHEN: Calling with one and with two arguments.
+    const auto withOne = publisher->invokeMethod(this, fullIndex, oneArg);
+    const auto withTwo = publisher->invokeMethod(this, fullIndex, twoArgs);
+
+    // THEN: Omitted arguments take the declared defaults.
+    QCOMPARE(withOne.toString(), QStringLiteral("x|7|dflt"));
+    QCOMPARE(withTwo.toString(), QStringLiteral("x|3|dflt"));
 }
 
 void TestWebChannel::testSetPropertyConversion()
